@@ -1,0 +1,24 @@
+# Core Utils
+python-dotenv
+gitpython
+
+# LlamaIndex Core & Vector Store
+llama-index-core
+llama-index-vector-stores-chroma
+chromadb
+
+# Embeddings (HuggingFace)
+llama-index-embeddings-huggingface
+sentence-transformers
+
+# LLM Inference (Groq & Ollama)
+llama-index-llms-groq
+llama-index-llms-ollama
+
+# Parsing
+tree-sitter-languages
+tree-sitter-language-pack
+llama-index-readers-file
+
+# UI
+gradio
