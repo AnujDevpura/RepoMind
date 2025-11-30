@@ -97,11 +97,23 @@ Configuration options are available in `src/config.py`:
 You can customize the embedding and LLM models in `src/config.py`:
 
 ```python
-# Embedding model (HuggingFace)
-EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
+# --- Model Configs ---
+# Option A (Better): "BAAI/bge-m3"
+# Option B (Lite): "BAAI/bge-small-en-v1.5"
+EMBEDDING_MODEL_NAME = "BAAI/bge-small-en-v1.5"
 
-# LLM provider: "groq", "ollama", or "openai"
-LLM_PROVIDER = "groq"
+# --- Retrieval Configs ---
+TOP_K = 15
+RERANK_TOP_K = 5
+# Reranker model options (ranked by accuracy):
+# "BAAI/bge-reranker-v2-m3"
+# "cross-encoder/ms-marco-MiniLM-L-12-v2" (good accuracy)
+# "cross-encoder/ms-marco-MiniLM-L-6-v2" (fastest, good enough accuracy)
+RERANK_MODEL = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+
+# --- LLM Configs ---
+# LLM_MODEL_NAME = "llama-3.3-70b-versatile"
+LLM_MODEL_NAME = "openai/gpt-oss-120b"
 ```
 
 ## Project Structure
