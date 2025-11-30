@@ -20,7 +20,7 @@ EMBEDDING_MODEL_NAME = "BAAI/bge-small-en-v1.5"
 # --- Retrieval Configs ---
 TOP_K = 15
 RERANK_TOP_K = 5
-# Reranker model options (ranked by accuracy):
+# Reranker model options:
 # "BAAI/bge-reranker-v2-m3"
 # "cross-encoder/ms-marco-MiniLM-L-12-v2" (good accuracy)
 # "cross-encoder/ms-marco-MiniLM-L-6-v2" (fastest, good enough accuracy)
