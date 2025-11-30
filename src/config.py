@@ -27,8 +27,8 @@ RERANK_TOP_K = 5
 RERANK_MODEL = "cross-encoder/ms-marco-MiniLM-L-6-v2"
 
 # --- LLM Configs ---
-LLM_MODEL_NAME = "llama-3.3-70b-versatile"
-# LLM_MODEL_NAME = "openai/gpt-oss-120b"
+# LLM_MODEL_NAME = "llama-3.3-70b-versatile"
+LLM_MODEL_NAME = "openai/gpt-oss-120b"
 
 # --- Ingestion Configs ---
 CHUNK_SIZE = 3000
