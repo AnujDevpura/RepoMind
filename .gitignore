@@ -40,9 +40,6 @@ ENV/
 data/cloned_repos/
 data/chromadb/
 
-data/
-chroma.sqlite3
-
 # OS
 .DS_Store
 Thumbs.db
