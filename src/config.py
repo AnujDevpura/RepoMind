@@ -15,22 +15,21 @@ os.makedirs(CHROMA_PATH, exist_ok=True)
 # --- Model Configs ---
 # Option A (Better): "BAAI/bge-m3"
 # Option B (Lite): "BAAI/bge-small-en-v1.5"
-EMBEDDING_MODEL_NAME = "BAAI/bge-m3"
+EMBEDDING_MODEL_NAME = "BAAI/bge-small-en-v1.5"
 
 # --- Retrieval Configs ---
 TOP_K = 15
 RERANK_TOP_K = 5
 # Reranker model options (ranked by accuracy):
-# 1. "BAAI/bge-reranker-large" (best accuracy, slowest)
-# 2. "BAAI/bge-reranker-base" (good accuracy, matches BGE embedding family)
-# 3. "cross-encoder/ms-marco-MiniLM-L-12-v2" (good accuracy)
-# 4. "cross-encoder/ms-marco-MiniLM-L-6-v2" (fastest, good enough accuracy)
-RERANK_MODEL = "BAAI/bge-reranker-base"
+# "BAAI/bge-reranker-v2-m3"
+# "cross-encoder/ms-marco-MiniLM-L-12-v2" (good accuracy)
+# "cross-encoder/ms-marco-MiniLM-L-6-v2" (fastest, good enough accuracy)
+RERANK_MODEL = "cross-encoder/ms-marco-MiniLM-L-6-v2"
 
 # --- LLM Configs ---
-# LLM_MODEL_NAME = "llama-3.3-70b-versatile"
-LLM_MODEL_NAME = "openai/gpt-oss-120b"
+LLM_MODEL_NAME = "llama-3.3-70b-versatile"
+# LLM_MODEL_NAME = "openai/gpt-oss-120b"
 
 # --- Ingestion Configs ---
-CHUNK_SIZE = 1024
+CHUNK_SIZE = 3000
 CHUNK_OVERLAP = 200

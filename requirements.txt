@@ -17,7 +17,6 @@ llama-index-llms-ollama
 
 # Parsing
 tree-sitter-languages
-tree-sitter-language-pack
 llama-index-readers-file
 
 # UI
