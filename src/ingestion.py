@@ -104,6 +104,8 @@ def get_language_from_extension(ext: str) -> str:
         ".scala": "scala",
         ".r": "r",
         ".R": "r",
+        ".html": "html",
+        ".css": "css",
     }
     return language_map.get(ext.lower(), "python")
 
@@ -225,6 +227,8 @@ def chunk_documents_by_language(documents: List[Document]) -> List:
         "cpp": "cpp",
         "c": "c",
         "csharp": "c_sharp",
+        "html": "html",
+        "css": "css",
     }
     
     ast_supported_langs = set(parser_lang_map.keys())

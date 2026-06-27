@@ -1,233 +1,215 @@
 import os
-import base64
-import gradio as gr
-import io
 import sys
+import io
+import streamlit as st
+import time
+
+# Ensure UTF-8 output for Windows console
+if sys.stdout.encoding != 'utf-8':
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+
+# --- Page Config & CSS ---
+st.set_page_config(page_title="RepoMind", layout="wide", initial_sidebar_state="expanded")
+
+# Custom CSS for the "Anti-Streamlit" premium look
+custom_css = """
+<style>
+/* Hide the top header and hamburger menu */
+header {visibility: hidden;}
+
+/* Hide the footer */
+footer {visibility: hidden;}
+
+/* Remove padding from the main block and adjust for full width */
+.block-container {
+    padding-top: 2rem !important;
+    padding-bottom: 0rem !important;
+    padding-left: 5rem !important;
+    padding-right: 5rem !important;
+    max-width: 100% !important;
+}
+
+/* Premium dark theme for sidebar */
+[data-testid="stSidebar"] {
+    background-color: #121212 !important;
+    border-right: 1px solid #2d2d30 !important;
+}
+
+/* Chat input styling */
+[data-testid="stChatInputContainer"] {
+    background-color: #1e1e1e !important;
+    border: 1px solid #333 !important;
+    border-radius: 16px !important;
+    padding-bottom: 10px !important;
+}
+
+/* Chat message bubbles */
+[data-testid="chatAvatarIcon-user"] {
+    background-color: #3b82f6 !important;
+}
+[data-testid="chatAvatarIcon-assistant"] {
+    background-color: #8b5cf6 !important;
+}
+
+/* Make headers look cleaner */
+h1, h2, h3 {
+    font-weight: 600 !important;
+    color: #f3f4f6 !important;
+}
+
+/* Make buttons pop slightly */
+.stButton>button {
+    border-radius: 8px !important;
+}
+</style>
+"""
+st.markdown(custom_css, unsafe_allow_html=True)
+
+# Add project root to sys.path so 'src' module can be found when running via Streamlit
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
+
+# Imports must happen after page config in Streamlit
 from src.retrieval import Retriever
 from src.llm import LLMEngine
-from src.database import initialize_database
+from src.database import initialize_database, get_all_repositories, delete_repository
 from src.ingestion import ingest_repo
+from src.config import USE_RERANKER
 
-# --- Global State ---
-print("⚙️ System Startup...")
+# --- Cache Models ---
+# We use @st.cache_resource so the Vector DB and LLM don't reload on every chat message!
+@st.cache_resource(show_spinner=False)
+def load_system():
+    initialize_database()
+    return Retriever(use_reranker=USE_RERANKER), LLMEngine()
+
 try:
-    initialize_database()  # Load Embeddings
-    retriever = Retriever(use_reranker=True)  # Load Vector DB + Reranker
-    llm_engine = LLMEngine()  # Load LLM Client
-    print("✅ System Ready! Launching UI...")
+    with st.spinner("Initializing AI Core..."):
+        retriever, llm_engine = load_system()
 except Exception as e:
-    print(f"❌ Failed to initialize system: {e}")
-    print("   Make sure:")
-    print("   1. You've ingested at least one repository")
-    print("   2. GROQ_API_KEY is set in .env file")
-    raise
+    st.error(f"Failed to initialize system: {e}")
+    st.stop()
 
-def handle_ingestion(repo_url: str, force_clone: bool):
-    """
-    Wrapper function to run ingestion and capture output for the UI.
-    """
-    if not repo_url or not repo_url.strip():
-        return "❌ Error: Repository URL cannot be empty."
+# --- State Management ---
+if "messages" not in st.session_state:
+    st.session_state.messages = []
 
-    # Redirect stdout to capture logs
-    old_stdout = sys.stdout
-    sys.stdout = captured_output = io.StringIO()
-
-    try:
-        ingest_repo(repo_url, force_clone=force_clone)
-        
-        # --- CRITICAL: Reload the retriever to see the new data ---
-        global retriever
-        print("\n🔄 Reloading retrieval engine with new data...")
-        retriever = Retriever(use_reranker=True)
-        print("✅ Retrieval engine reloaded.")
-        
-    except Exception as e:
-        print(f"\n\n❌ INGESTION FAILED: {e}")
-    finally:
-        # Restore stdout and get the captured output
-        sys.stdout = old_stdout
-        log_output = captured_output.getvalue()
-
-    # Use Markdown for better formatting in Gradio
-    return f"```\n{log_output}\n```"
-
-
-def retrieve_and_chat(message, history):
-    """
-    Core RAG Generator.
-    Compatible with ChatInterface format.
-    """
-    if not message or not message.strip():
-        return ""
+# --- Sidebar ---
+with st.sidebar:
+    st.title("🧠 RepoMind")
+    st.caption("AI-Powered Code Intelligence")
+    st.divider()
     
-    try:
-        # 1. Retrieval
-        print(f"🔍 User asked: {message}")
-        nodes = retriever.search(message)
-        
-        if not nodes:
-            response_text = "I couldn't find any relevant code in the ingested repository. Try rephrasing your question or ingest a different repo."
-            return response_text
-        
-        # 2. Generation
-        response_text = llm_engine.chat(message, nodes)
-        
-        # 3. Format Sources
-        sources_html = "\n\n<details><summary>📚 <strong>Context Sources</strong></summary>\n\n"
-        for i, node in enumerate(nodes, 1):
-            score = getattr(node, 'score', None)
-            metadata = getattr(node, 'metadata', {})
-            file_path = metadata.get('file_path', 'Unknown')
-            score_str = f"{score:.2f}" if score is not None else "N/A"
-            sources_html += f"{i}. `{file_path}` (Relevance: {score_str})<br>"
-        sources_html += "</details>"
-        
-        # 4. Return Complete Response
-        return response_text + sources_html
-                
-    except Exception as e:
-        import traceback
-        print(f"❌ Error: {traceback.format_exc()}")
-        return f"❌ Error: {str(e)}"
-
-# --- Custom CSS ---
-custom_css = """
-/* Clean Header */
-.header-container {
-    text-align: center;
-    padding: 2rem;
-    background: linear-gradient(135deg, #2a387a 0%, #3c2657 100%);
-    border-radius: 12px;
-    margin-bottom: 1rem;
-    color: white;
-}
-.header-container h1 { 
-    font-size: 2.5rem; 
-    margin-bottom: 0.5rem; 
-    color: white;
-    font-weight: 700;
-}
-.header-container p {
-    font-size: 1.1rem;
-    color: rgba(255, 255, 255, 0.9);
-}
-
-/* Chat Styling */
-.chat-window { 
-    height: 600px !important; 
-    border-radius: 8px;
-}
-
-/* Footer Styling */
-.footer-text {
-    text-align: center;
-    margin-top: 20px;
-    opacity: 0.6;
-    font-size: 0.9rem;
-}
-"""
-
-# --- Theme ---
-theme = gr.themes.Soft(
-    primary_hue="indigo",
-    secondary_hue="blue",
-    neutral_hue="slate",
-    font=("Inter", "system-ui", "sans-serif"),
-)
-
-# --- Gradio UI Layout ---
-with gr.Blocks(title="RepoMind") as demo:
-
-    # --- Asset Paths ---
-    script_dir = os.path.dirname(__file__)
-    avatar_path = os.path.abspath(os.path.join(script_dir, "..", "assets", "avatar.png"))
-
-    # --- Encode Avatar for HTML ---
-    with open(avatar_path, "rb") as image_file:
-        encoded_string = base64.b64encode(image_file.read()).decode('utf-8')
-    avatar_data_uri = f"data:image/png;base64,{encoded_string}"
-
-
-    # Header
-    gr.HTML(f"""
-        <div class="header-container">
-            <h1 style="display: flex; align-items: center; justify-content: center;">
-                <img src="{avatar_data_uri}" style="height: 40px; margin-right: 10px;">RepoMind
-            </h1>
-            <p>Your AI-Powered Code Intelligence Assistant</p>
-        </div>
-    """)
-
-    with gr.Tabs() as tabs:
-        with gr.TabItem("💬 Chat with Repo", id=0):
-            # Info Box
-            gr.Markdown(
-                """
-                > **💡 Tip:** Ask about specific files, function logic, or architectural patterns. 
-                > The system uses **RAG (Retrieval-Augmented Generation)** to cite its sources.
-                """
-            )
-
-            # Main Chat Interface
-            gr.ChatInterface(
-                fn=retrieve_and_chat,
-                chatbot=gr.Chatbot(
-                    height=600,
-                    avatar_images=(None, avatar_path),
-                    render_markdown=True,
-                ),
-                textbox=gr.Textbox(
-                    placeholder="How does the authentication middleware work?",
-                    container=False,
-                    scale=7
-                ),
-                examples=[
-                    "What is the main purpose of this repository?",
-                    "Explain the database schema.",
-                    "What dependencies are used?",
-                    "Summarize the main entry point of the app.",
-                ],
-            )
-
-        with gr.TabItem("➕ Ingest New Repo", id=1):
-            gr.Markdown(
-                "## Ingest a New GitHub Repository\n"
-                "Enter the URL of a public GitHub repository to add it to the vector database. "
-                "This process may take several minutes depending on the size of the repository."
-            )
-            with gr.Row():
-                repo_url_input = gr.Textbox(
-                    label="GitHub Repository URL", 
-                    placeholder="https://github.com/some-user/some-repo",
-                    scale=4
-                )
-                force_clone_checkbox = gr.Checkbox(label="Force Re-clone if Exists", value=False)
-            
-            ingest_button = gr.Button("🚀 Ingest Repository", variant="primary")
-            
-            ingestion_status = gr.Markdown(label="Ingestion Status", value="*Awaiting ingestion...*")
-            
-            ingest_button.click(
-                fn=handle_ingestion,
-                inputs=[repo_url_input, force_clone_checkbox],
-                outputs=ingestion_status
-            )
-
-    # Footer
-    gr.HTML("""
-        <div class="footer-text">
-            RepoMind • Powered by LlamaIndex & ChromaDB
-        </div>
-    """)
-
-if __name__ == "__main__":
-    demo.queue()
-    demo.launch(
-        server_name="127.0.0.1",
-        server_port=7860,
-        share=False,
-        show_error=True,
-        theme=theme, 
-        css=custom_css
+    st.subheader("📂 Workspace Context")
+    all_repos = ["All Repositories"] + get_all_repositories()
+    selected_repo = st.selectbox(
+        "Target Repository",
+        options=all_repos,
+        index=0,
+        help="Scope AI search to a specific codebase"
     )
+    
+    st.divider()
+    with st.expander("➕ Ingest New Repo"):
+        repo_url = st.text_input("GitHub URL")
+        force_clone = st.checkbox("Force Re-clone")
+        if st.button("Start Ingestion", type="primary", use_container_width=True):
+            if not repo_url:
+                st.error("Please enter a URL.")
+            else:
+                with st.spinner("Cloning and processing... this may take a while."):
+                    try:
+                        ingest_repo(repo_url, force_clone)
+                        # Clear cache so the retriever picks up the new index
+                        load_system.clear()
+                        st.success("✅ Ingestion complete!")
+                        time.sleep(1)
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Failed: {e}")
+    
+    with st.expander("🗑️ Manage Repos"):
+        del_target = st.selectbox("Delete Repo", options=["Select..."] + get_all_repositories())
+        if st.button("Delete", use_container_width=True):
+            if del_target != "Select...":
+                delete_repository(del_target)
+                load_system.clear()
+                st.success(f"Deleted {del_target}")
+                time.sleep(1)
+                st.rerun()
+                
+    st.divider()
+    st.caption(f"**Engine:** {llm_engine.provider.upper()} ({llm_engine.model_name})")
+    st.caption(f"**Reranker:** {'Enabled' if USE_RERANKER else 'Disabled'}")
+
+# --- Main Chat Interface ---
+# 1. Display history
+for msg in st.session_state.messages:
+    with st.chat_message(msg["role"]):
+        st.markdown(msg["content"])
+
+# 2. Chat Input Trigger
+if prompt := st.chat_input("Ask RepoMind about your codebase..."):
+    
+    # Append user message to state and display it immediately
+    st.session_state.messages.append({"role": "user", "content": prompt})
+    with st.chat_message("user"):
+        st.markdown(prompt)
+
+    # 3. Generate Assistant Response
+    with st.chat_message("assistant"):
+        sources_md = ""
+        nodes = []
+        
+        # Retrieval Phase
+        with st.status("Searching codebase...", expanded=True) as status:
+            try:
+                nodes = retriever.search(prompt, repo_name=selected_repo)
+                if not nodes:
+                    st.warning("No relevant code found in this repository.")
+                    status.update(label="No results found", state="error")
+                else:
+                    st.write(f"Found {len(nodes)} relevant snippets.")
+                    sources_md = "\n\n---\n**📚 Context Sources:**\n"
+                    for i, node in enumerate(nodes, 1):
+                        score = getattr(node, 'score', None)
+                        metadata = getattr(node, 'metadata', {})
+                        file_path = metadata.get('file_path', 'Unknown')
+                        node_repo = metadata.get('repo_name', 'Unknown Repo')
+                        score_str = f"{score:.2f}" if score is not None else "N/A"
+                        sources_md += f"- `[{node_repo}] {file_path}` (Relevance: {score_str})\n"
+                    status.update(label="Context retrieved successfully", state="complete")
+            except Exception as e:
+                status.update(label=f"Search failed: {e}", state="error")
+        
+        # Generation Phase
+        if nodes:
+            # Build history format expected by llm_engine
+            history = []
+            for i in range(0, len(st.session_state.messages)-1, 2):
+                if i+1 < len(st.session_state.messages):
+                    history.append((
+                        st.session_state.messages[i]["content"], 
+                        st.session_state.messages[i+1]["content"]
+                    ))
+            
+            # Stream the response natively in Streamlit
+            def generate():
+                for chunk in llm_engine.stream_chat(prompt, nodes, history):
+                    if chunk:
+                        yield chunk
+            
+            try:
+                # write_stream types out the chunks as they arrive
+                response = st.write_stream(generate())
+                
+                # Append sources visually at the end of the stream
+                if sources_md:
+                    st.markdown(sources_md)
+                    response += sources_md
+                    
+                # Save the final text back to state
+                st.session_state.messages.append({"role": "assistant", "content": response})
+            except Exception as e:
+                st.error(f"Generation error: {e}")
