@@ -39,6 +39,10 @@ ENV/
 # Data directories (local storage)
 data/cloned_repos/
 data/chromadb/
+data/graphdb/
+data/semantic_cache.json
+# eval_microservices.json
+# scorecard.json
 
 # OS
 .DS_Store

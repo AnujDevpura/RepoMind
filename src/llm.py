@@ -4,15 +4,14 @@ from llama_index.llms.openai import OpenAI
 from llama_index.llms.ollama import Ollama
 from llama_index.core.llms import ChatMessage
 from dotenv import load_dotenv
-from src.config import LLM_MODEL_NAME, LLM_PROVIDER
 
 # Load environment variables (API Keys)
 load_dotenv()
 
 class LLMEngine:
-    def __init__(self, provider: str = None, model_name: str = None):
-        self.provider = (provider or LLM_PROVIDER).lower()
-        self.model_name = model_name or LLM_MODEL_NAME
+    def __init__(self, provider: str, model_name: str):
+        self.provider = provider.lower()
+        self.model_name = model_name
         
         print(f"🧠 Initializing LLM Engine with provider: '{self.provider}', model: '{self.model_name}'...")
         
@@ -28,9 +27,21 @@ class LLMEngine:
                 raise ValueError("❌ OPENAI_API_KEY not found in .env file. Please add it!")
             self.llm = OpenAI(model=self.model_name, api_key=api_key)
             
+        elif self.provider == "openrouter":
+            api_key = os.getenv("OPENROUTER_API_KEY")
+            if not api_key:
+                raise ValueError("❌ OPENROUTER_API_KEY not found in .env file. Please add it!")
+            # OpenRouter uses the OpenAI API standard
+            self.llm = OpenAI(
+                model=self.model_name, 
+                api_key=api_key, 
+                api_base="https://openrouter.ai/api/v1",
+                default_headers={"HTTP-Referer": "https://repomind.local", "X-Title": "RepoMind"}
+            )
+            
         elif self.provider == "ollama":
             # Ollama runs locally, no API key needed
-            self.llm = Ollama(model=self.model_name, request_timeout=120.0)
+            self.llm = Ollama(model=self.model_name, request_timeout=3600.0)
             
         else:
             raise ValueError(f"❌ Unsupported LLM provider: {self.provider}")
@@ -96,7 +107,7 @@ class LLMEngine:
 if __name__ == "__main__":
     # Sanity Check
     try:
-        llm = LLMEngine()
+        llm = LLMEngine(provider="groq", model_name="llama-3.3-70b-versatile")
         print("✅ LLM Connected! Testing streaming pipeline...")
         
         # Test stream without context

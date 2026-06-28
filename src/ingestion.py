@@ -1,20 +1,27 @@
 import os
+import sys
+import io
+
+if sys.stdout.encoding != 'utf-8':
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
 import re
 import git
-import sys
 import traceback
 from typing import List, Optional
 from urllib.parse import urlparse
 from pathlib import Path
 
-from llama_index.core import Document, VectorStoreIndex, StorageContext
-from llama_index.core.node_parser import CodeSplitter, SimpleNodeParser
+from llama_index.core import Document
+from llama_index.core.indices.property_graph import PropertyGraphIndex
 from llama_index.readers.file import FlatReader
 
-from tree_sitter_languages import get_parser
-# Internal imports (assuming these exist in your project structure)
-from src.config import CLONE_DIR, CHUNK_SIZE, CHUNK_OVERLAP
-from src.database import get_vector_store, initialize_database
+# Internal imports
+from src.config import CLONE_DIR, GRAPH_PATH, INGEST_LLM_PROVIDER, INGEST_LLM_MODEL
+from src.database import get_vector_store, get_graph_store, initialize_database
+from src.ast_extractor import ASTPropertyGraphExtractor
+from src.semantic_enricher import SemanticEnrichmentComponent
+from src.llm import LLMEngine
+
 
 def extract_repo_name(repo_url: str) -> str:
     """
@@ -73,7 +80,6 @@ def clone_repo(repo_url: str, force_clone: bool = False) -> str:
     except git.exc.GitCommandError as e:
         raise git.exc.GitCommandError(f"Failed to clone repository: {e}") from e
     except Exception as e:
-        # Fixed: Removed the copy-paste error here that referenced SimpleNodeParser
         raise RuntimeError(f"Unexpected error during clone: {e}") from e
     
     return repo_path
@@ -81,7 +87,7 @@ def clone_repo(repo_url: str, force_clone: bool = False) -> str:
 
 def get_language_from_extension(ext: str) -> str:
     """
-    Map file extension to language for CodeSplitter.
+    Map file extension to language for tagging metadata.
     """
     language_map = {
         ".py": "python",
@@ -211,108 +217,9 @@ def parse_code_files(repo_path: str, max_file_size_mb: float = 5.0) -> List[Docu
     return documents
 
 
-def chunk_documents_by_language(documents: List[Document]) -> List:
+def ingest_repo(repo_url: str, force_clone: bool = False) -> Optional[PropertyGraphIndex]:
     """
-    Chunk documents using language-specific CodeSplitter when possible.
-    """
-    
-    # Language mapping 
-    parser_lang_map = {
-        "python": "python",
-        "javascript": "javascript",
-        "typescript": "typescript",
-        "java": "java",
-        "go": "go",
-        "rust": "rust",
-        "cpp": "cpp",
-        "c": "c",
-        "csharp": "c_sharp",
-        "html": "html",
-        "css": "css",
-    }
-    
-    ast_supported_langs = set(parser_lang_map.keys())
-    
-    docs_by_lang = {}
-    for doc in documents:
-        lang = doc.metadata.get("language", "python")
-        if lang not in docs_by_lang:
-            docs_by_lang[lang] = []
-        docs_by_lang[lang].append(doc)
-    
-    all_nodes = []
-    
-    for lang, lang_docs in docs_by_lang.items():
-        lang_nodes = []
-        
-        # Filter out empty documents first
-        valid_docs = []
-        for doc in lang_docs:
-            content = doc.get_content() if hasattr(doc, 'get_content') else (doc.text if hasattr(doc, 'text') else str(doc))
-            if content and content.strip():
-                valid_docs.append(doc)
-            else:
-                print(f"  ⚠️ Skipping empty document: {doc.metadata.get('file_name', 'unknown')}")
-        
-        if not valid_docs:
-            print(f"  ⚠️ No valid documents for language: {lang}")
-            continue
-        
-        try:
-            # Try language-specific CodeSplitter with manual parser injection
-            if lang in ast_supported_langs:
-                # 1. Map 'python' -> 'python', 'csharp' -> 'c_sharp' etc.
-                parser_lang = parser_lang_map.get(lang, lang)
-                
-                # 2. Get the parser using the library we just installed
-                parser = get_parser(parser_lang)
-                
-                # 3. Manually pass it to CodeSplitter to bypass the ImportError
-                splitter = CodeSplitter(
-                    language=lang,
-                    parser=parser,  # <--- CRITICAL INJECTION
-                    chunk_lines=40,
-                    chunk_lines_overlap=10,
-                    max_chars=CHUNK_SIZE,
-                )
-                
-                # Process documents one by one to catch individual failures
-                for doc in valid_docs:
-                    try:
-                        doc_nodes = splitter.get_nodes_from_documents([doc])
-                        lang_nodes.extend(doc_nodes)
-                    except Exception as doc_error:
-                        # If AST parsing fails for this specific doc, fall back to text splitting
-                        print(f"  ⚠️ AST parsing failed for {doc.metadata.get('file_name', 'unknown')}, using text fallback for this file")
-                        text_splitter = SimpleNodeParser.from_defaults(
-                            chunk_size=1024,
-                            chunk_overlap=200,
-                        )
-                        doc_nodes = text_splitter.get_nodes_from_documents([doc])
-                        lang_nodes.extend(doc_nodes)
-                
-                print(f"  ✓ AST-aware chunked {len(valid_docs)} {lang} files into {len(lang_nodes)} nodes")
-            else:
-                raise ValueError(f"Language {lang} not supported for AST splitting")
-
-        except Exception as e:
-            print(f"  ⚠️ CodeSplitter failed for {lang}, using text fallback for all files.")
-            print(f"     Error: {e}") 
-            
-            splitter = SimpleNodeParser.from_defaults(
-                chunk_size=1024,
-                chunk_overlap=200,
-            )
-            lang_nodes = splitter.get_nodes_from_documents(valid_docs)
-            print(f"  ✓ Fallback: Text-chunked {len(valid_docs)} {lang} files into {len(lang_nodes)} nodes")
-        
-        all_nodes.extend(lang_nodes)
-    
-    return all_nodes
-
-def ingest_repo(repo_url: str, force_clone: bool = False) -> Optional:
-    """
-    Complete ingestion pipeline: Clone -> Parse -> Chunk -> Embed -> Store.
+    Complete ingestion pipeline: Clone -> Parse -> Embed -> Store.
     """
     if not repo_url or not repo_url.strip():
         raise ValueError("Repository URL cannot be empty")
@@ -333,33 +240,56 @@ def ingest_repo(repo_url: str, force_clone: bool = False) -> Optional:
         
         print(f"\n📄 Processing {len(raw_documents)} documents...")
         
-        # 3. Chunk documents (language-aware)
-        print("✂️ Chunking code files (AST-aware when possible)...")
-        nodes = chunk_documents_by_language(raw_documents)
-        
-        if not nodes:
-            raise ValueError("No chunks created from documents.")
-        
-        print(f"🧩 Created {len(nodes)} semantic chunks.\n")
-        
-        # 4. Embed & Index (ChromaDB)
-        print("💾 Saving to Vector Database (this may take a while)...")
+        # 3. Embed, Extract Graph & Index
+        print("🌐 Deterministically extracting Knowledge Graph (Zero API Cost for Structure)...")
         vector_store = get_vector_store()
+        graph_store = get_graph_store()
         
-        storage_context = StorageContext.from_defaults(vector_store=vector_store)
+        print(f"🤖 Semantically enriching graph nodes (1-sentence summaries) via {INGEST_LLM_PROVIDER} ({INGEST_LLM_MODEL})...")
+        llm_engine = LLMEngine(provider=INGEST_LLM_PROVIDER, model_name=INGEST_LLM_MODEL)
         
-        # Create the index - this triggers embedding generation
-        index = VectorStoreIndex(
-            nodes,
-            storage_context=storage_context,
-            show_progress=True,
+        kg_extractors = [
+            ASTPropertyGraphExtractor(),
+            SemanticEnrichmentComponent(
+                llm=llm_engine.llm,
+                # Only pass model name for local Ollama — triggers VRAM eviction +
+                # CUDA upgrade for the embedding phase that runs immediately after.
+                ollama_model=INGEST_LLM_MODEL if INGEST_LLM_PROVIDER == "ollama" else None,
+            )
+        ]
+        
+        from llama_index.core.ingestion import IngestionPipeline
+
+        # Run extraction pipeline manually so it doesn't lock the mock embedder
+        pipeline = IngestionPipeline(transformations=kg_extractors)
+        nodes = pipeline.run(documents=raw_documents, show_progress=True)
+        
+        from llama_index.core import Settings
+        
+        index = PropertyGraphIndex(
+            nodes=[], 
+            property_graph_store=graph_store,
+            vector_store=vector_store,
+            embed_model=Settings.embed_model,
         )
         
+        # Batch nodes manually to prevent ChromaDB from exceeding its max batch size of 5461
+        # (Each node contains many kg_nodes extracted by AST/LLM).
+        batch_size = 50
+        print(f"\n📦 Inserting {len(nodes)} document nodes into index in batches of {batch_size}...")
+        for i in range(0, len(nodes), batch_size):
+            batch = nodes[i:i+batch_size]
+            index.insert_nodes(batch)
+            print(f"   Inserted {min(i + batch_size, len(nodes))}/{len(nodes)} documents...")
+
+        
+        # Persist the GraphStore
+        graph_store.persist(os.path.join(GRAPH_PATH, "graph_store.json"))
+        
         print(f"\n{'='*60}")
-        print("✅ Ingestion Complete! Embeddings stored in ChromaDB.")
+        print("✅ GraphRAG Ingestion Complete! Graph stored to disk and vectors in ChromaDB.")
         print(f"   Repository: {Path(local_path).name}")
         print(f"   Documents: {len(raw_documents)}")
-        print(f"   Chunks: {len(nodes)}")
         print(f"{'='*60}\n")
         
         return index
@@ -378,7 +308,8 @@ def ingest_repo(repo_url: str, force_clone: bool = False) -> Optional:
 if __name__ == "__main__":
     # Test Run
     print("🔧 Initializing database...")
-    initialize_database()
+    initialize_database(load_embed_model=False)
+
     
     # Get repo URL from command line or use default test repo
     if len(sys.argv) > 1:

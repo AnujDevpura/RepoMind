@@ -21,10 +21,12 @@ PROJECT_ROOT = Path(__file__).parent.parent
 DATA_DIR = os.path.join(PROJECT_ROOT, "data")
 CLONE_DIR = os.path.join(DATA_DIR, "cloned_repos")
 CHROMA_PATH = os.path.join(DATA_DIR, "chromadb")
+GRAPH_PATH = os.path.join(DATA_DIR, "graphdb")
 
 # Ensure directories exist
 os.makedirs(CLONE_DIR, exist_ok=True)
 os.makedirs(CHROMA_PATH, exist_ok=True)
+os.makedirs(GRAPH_PATH, exist_ok=True)
 
 # --- Model Configs ---
 # Option A (Better): "BAAI/bge-m3"
@@ -32,17 +34,15 @@ os.makedirs(CHROMA_PATH, exist_ok=True)
 EMBEDDING_MODEL_NAME = os.getenv("EMBEDDING_MODEL_NAME", "BAAI/bge-m3")
 
 # --- Retrieval / RAG Config ---
-CHUNK_SIZE = get_int_env("CHUNK_SIZE", 1500)
-CHUNK_OVERLAP = get_int_env("CHUNK_OVERLAP", 200)
-TOP_K = get_int_env("TOP_K", 40)
-RERANK_TOP_K = get_int_env("RERANK_TOP_K", 12)
-# Reranker model options:
-# "BAAI/bge-reranker-v2-m3" (Most accurate, but slow on CPU)
-# "cross-encoder/ms-marco-MiniLM-L-12-v2" (good accuracy)
-# "cross-encoder/ms-marco-MiniLM-L-6-v2" (fastest, good enough accuracy)
-RERANK_MODEL = os.getenv("RERANK_MODEL", "cross-encoder/ms-marco-MiniLM-L-6-v2")
-USE_RERANKER = os.getenv("USE_RERANKER", "true").lower() == "true"
+TOP_K = get_int_env("TOP_K", 3) # Restored to 5 since we are moving to local Ollama
 
-# --- LLM Configs ---
-LLM_PROVIDER = os.getenv("LLM_PROVIDER", "groq").lower()
-LLM_MODEL_NAME = os.getenv("LLM_MODEL_NAME", "llama-3.3-70b-versatile")
+# --- Feature Flags ---
+USE_RERANKER = os.getenv("USE_RERANKER", "false").lower() == "true"
+
+# --- LLM Configs (Ingestion) ---
+INGEST_LLM_PROVIDER = os.getenv("INGEST_LLM_PROVIDER", "ollama").lower()
+INGEST_LLM_MODEL = os.getenv("INGEST_LLM_MODEL", "qwen2.5-coder:7b")
+
+# --- LLM Configs (Retrieval) ---
+RETRIEVE_LLM_PROVIDER = os.getenv("RETRIEVE_LLM_PROVIDER", "groq").lower()
+RETRIEVE_LLM_MODEL = os.getenv("RETRIEVE_LLM_MODEL", "llama-3.3-70b-versatile")

@@ -1,120 +1,137 @@
 # RepoMind
 
-> A powerful repository code search and retrieval system that lets you query and understand code using natural language.
+> AI-powered code intelligence using GraphRAG — query any codebase in natural language.
 
-## Overview
+## What it Does
 
-RepoMind transforms how you explore and understand codebases. By combining advanced embedding models with large language models, it enables you to search through repositories using natural language queries and get contextually relevant answers about code structure, functionality, and implementation details.
+RepoMind ingests Git repositories and builds a **Property Knowledge Graph** of the codebase using a two-tier pipeline:
 
-## Features
+1. **Deterministic AST Extraction** — Tree-sitter parses 15+ languages and maps every function definition and call relationship into a graph. Zero LLM cost, zero hallucination.
+2. **Semantic Enrichment** — A local Ollama LLM reads each function's source code and writes a one-sentence summary. This summary (not the raw code) gets embedded into ChromaDB.
 
-- **🔍 Intelligent Code Search** - Find specific code snippets, functions, or patterns across entire repositories
-- **🧠 Contextual Understanding** - Leverage LLMs to understand code semantics, not just syntax
-- **📦 Easy Repository Ingestion** - Index any git repository with a single command
-- **🎯 Relevance Reranking** - Advanced reranking ensures the most relevant results surface first
-- **💻 User-Friendly Interface** - Clean Gradio-based UI for seamless interaction
-- **⚡ Fast Vector Search** - ChromaDB-powered vector store for lightning-fast retrieval
+When you ask a question, the **Hybrid Retriever** performs a **Semantic Jump** (vector similarity on summaries) then explodes outward through graph edges (**Structural Blast Radius**) to pull in related callers and callees — giving the answer LLM rich, structurally coherent context.
 
-## Installation
+---
 
-### 1. Clone the Repository
+## Architecture
+
+```
+GitHub URL
+    │
+    ▼
+[ Git Clone ]
+    │
+    ▼
+[ FlatReader ] — load 215+ code files
+    │
+    ▼
+┌──────────────────────────────────────────┐
+│         LlamaIndex Transform Pipeline     │
+│                                          │
+│  1. ASTPropertyGraphExtractor            │
+│     Tree-sitter → EntityNodes + Relations│
+│     (FUNCTION defs, CALLS edges)         │
+│                                          │
+│  2. SemanticEnrichmentComponent          │
+│     Local Ollama LLM → "summary" prop    │
+│     Async Semaphore(4) + cache + retries │
+└──────────────────────────────────────────┘
+    │                    │
+    ▼                    ▼
+[ ChromaDB ]        [ graph_store.json ]
+  (vectors of          (full property
+   summaries)           graph on disk)
+    │                    │
+    └────────┬───────────┘
+             ▼
+    [ Hybrid Retriever ]
+      VectorContextRetriever
+      path_depth=1 (blast radius)
+             │
+             ▼
+    [ Groq / GPT-OSS-120B ]
+      stream_chat with citations
+             │
+             ▼
+    [ Streamlit UI ]
+```
+
+---
+
+## Quick Start
+
+### 1. Prerequisites
+
+- Python 3.10+
+- [uv](https://docs.astral.sh/uv/) package manager
+- [Ollama](https://ollama.com/) running locally with a model pulled:
+  ```bash
+  ollama pull qwen2.5-coder:7b
+  ```
+- A [Groq API key](https://console.groq.com/) for Q&A synthesis
+
+### 2. Install
 
 ```bash
 git clone https://github.com/AnujDevpura/RepoMind.git
 cd RepoMind
+uv sync
 ```
 
-### 2. Install Dependencies with uv
+### 3. Configure
 
-```bash
-# uv automatically creates a virtual environment and installs dependencies
-uv pip install -r requirements.txt
-```
+Create a `.env` file in the project root:
 
-
-### 3. Configure API Keys
-
-Create a `.env` file in the root directory:
-
-```bash
-# For Groq (recommended for fast inference)
+```env
+# Required: for Q&A synthesis (retrieval LLM)
 GROQ_API_KEY=your_groq_api_key_here
 
-# For OpenAI (alternative)
-OPENAI_API_KEY=your_openai_api_key_here
-
-# For HuggingFace Models
-HF_TOKEN=your_hf_token_here
-
-# Ollama runs locally, no API key needed
+# Optional overrides (defaults shown)
+EMBEDDING_MODEL_NAME=BAAI/bge-m3
+INGEST_LLM_PROVIDER=ollama
+INGEST_LLM_MODEL=qwen2.5-coder:7b
+RETRIEVE_LLM_PROVIDER=groq
+RETRIEVE_LLM_MODEL=llama-3.3-70b-versatile
+TOP_K=5
+USE_RERANKER=false
 ```
 
-## Quick Start
-
-### Launch the Application
+### 4. Ingest a Repository
 
 ```bash
-
-# Activate the environment first
-source .venv/bin/activate  # On Linux/macOS
-.venv\Scripts\activate    # On Windows
-
-# Run the UI
-python -m src.app
+uv run python -m src.ingestion https://github.com/GoogleCloudPlatform/microservices-demo.git
 ```
 
-The Gradio interface will launch and provide a local URL (typically `http://127.0.0.1:7860`).
+This will clone the repo, extract the graph, generate LLM summaries, and embed them into ChromaDB. Ingestion is idempotent — restart safely if it crashes.
 
-### Ingest a Repository
+### 5. Launch the UI
 
-1. Open the Gradio interface in your browser
-2. Enter a git repository URL (e.g., `https://github.com/username/repo`)
-3. Click "Ingest Repository" and wait for indexing to complete
-4. Start querying your code!
-
-### Query Examples
-
-Try questions like:
-- "How is authentication implemented?"
-- "Show me all the API endpoints"
-- "Where is error handling done?"
-- "Explain the database schema"
-- "Find functions that handle file uploads"
-
-## Configuration
-
-Configuration options are available in `src/config.py`:
-
-| Option | Description | Default |
-|--------|-------------|---------|
-| `PROJECT_ROOT` | Root directory of the project | Auto-detected |
-| `DATA_DIR` | Storage for repositories and databases | `./data` |
-| `CLONE_DIR` | Cloned repositories location | `./data/cloned_repos` |
-| `CHROMA_PATH` | ChromaDB database path | `./data/chroma_db` |
-
-### Model Configuration
-
-You can customize the embedding and LLM models in `src/config.py`:
-
-```python
-# --- Model Configs ---
-# Option A (Better): "BAAI/bge-m3"
-# Option B (Lite): "BAAI/bge-small-en-v1.5"
-EMBEDDING_MODEL_NAME = "BAAI/bge-small-en-v1.5"
-
-# --- Retrieval Configs ---
-TOP_K = 15
-RERANK_TOP_K = 5
-# Reranker model options (ranked by accuracy):
-# "BAAI/bge-reranker-v2-m3"
-# "cross-encoder/ms-marco-MiniLM-L-12-v2" (good accuracy)
-# "cross-encoder/ms-marco-MiniLM-L-6-v2" (fastest, good enough accuracy)
-RERANK_MODEL = "cross-encoder/ms-marco-MiniLM-L-6-v2"
-
-# --- LLM Configs ---
-# LLM_MODEL_NAME = "llama-3.3-70b-versatile"
-LLM_MODEL_NAME = "openai/gpt-oss-120b"
+```bash
+uv run streamlit run src/app.py
 ```
+
+Open `http://localhost:8501` in your browser.
+
+### 6. CLI Query (Optional)
+
+```bash
+uv run python -m src.retrieval "How does the checkout service handle payment?"
+```
+
+### 7. Evaluation Pipeline
+
+To evaluate the system using the Code-Aware LLM-as-a-Judge mechanism:
+
+1. Generate a synthetic dataset (or use an existing `eval.json`):
+```bash
+uv run python -m src.evaluation.synthetic_data --repo microservices-demo --output eval_microservices.json
+```
+2. Run the 4-Pillar RAG Evaluator:
+```bash
+uv run python -m src.evaluation.run_eval eval_microservices.json --repo microservices-demo --output scorecard.json
+```
+
+---
 
 ## Project Structure
 
@@ -122,38 +139,63 @@ LLM_MODEL_NAME = "openai/gpt-oss-120b"
 RepoMind/
 ├── README.md
 ├── requirements.txt
-├── .env                      # API keys (create this)
+├── .env                          # API keys (create this)
 ├── .gitignore
-├── evaluation.ipynb         # Performance evaluation
-├── assets/
-│   └── avatar.png
 ├── data/
-│   ├── cloned_repos/        # Cloned repositories
-│   ├── chroma_db/           # Vector database
-│   ├── tests.jsonl          # Test queries     
+│   ├── cloned_repos/             # Git clones
+│   ├── chromadb/                 # Vector embeddings (ChromaDB)
+│   ├── graphdb/                  # Property graph (graph_store.json)
+│   └── semantic_cache.json       # LLM summary cache (crash-safe)
+├── scripts/
+│   ├── reset_index.py            # Utility: wipe ChromaDB collection
+│   └── repair_graph.py           # Utility: remove dangling triplets
 └── src/
     ├── __init__.py
-    ├── app.py               # Main application entry
-    ├── config.py            # Configuration settings
-    ├── database.py          # ChromaDB interface
-    ├── ingestion.py         # Repository processing
-    ├── llm.py              # LLM integrations
-    └── retrieval.py         # Search and reranking
+    ├── app.py                    # Streamlit UI
+    ├── config.py                 # All configuration and env vars
+    ├── database.py               # ChromaDB + graph store setup
+    ├── ingestion.py              # Full ingestion pipeline entry point
+    ├── ast_extractor.py          # Tree-sitter graph extractor (15+ langs)
+    ├── semantic_enricher.py      # LLM enrichment with async + caching
+    ├── retrieval.py              # Retriever class + CLI entry point
+    ├── llm.py                    # LLMEngine (Groq / OpenAI / Ollama)
+    └── evaluation/               # Comprehensive RAG Evaluator
+        ├── synthetic_data.py     # Synthetic Code Q&A Generator
+        ├── run_eval.py           # 4-Pillar single-shot judge evaluator
+        ├── metrics.py            # Custom LlamaIndex Evaluation Class
+        └── groq_client.py        # Robust client bypassing rate-limits
 ```
 
-## Dependencies
+---
 
-RepoMind builds on these excellent open-source projects:
+## Configuration Reference
 
-- **LlamaIndex** - Data framework for LLM applications
-- **ChromaDB** - Vector database for embeddings
-- **Sentence Transformers** - State-of-the-art embeddings
-- **Gradio** - Fast UI for ML applications
-- **Tree-sitter** - Code parsing and analysis
-- **Groq/Ollama** - Fast LLM inference
+All settings live in `src/config.py` and can be overridden via `.env`:
 
-For the complete list, see `requirements.txt`.
+| Variable | Default | Description |
+|---|---|---|
+| `EMBEDDING_MODEL_NAME` | `BAAI/bge-m3` | HuggingFace embedding model |
+| `INGEST_LLM_PROVIDER` | `ollama` | LLM provider for summarization |
+| `INGEST_LLM_MODEL` | `qwen2.5-coder:7b` | Model for summarization |
+| `RETRIEVE_LLM_PROVIDER` | `groq` | LLM provider for Q&A |
+| `RETRIEVE_LLM_MODEL` | `llama-3.3-70b-versatile` | Model for Q&A synthesis |
+| `TOP_K` | `5` | Retrieved nodes per query |
+| `USE_RERANKER` | `false` | Enable cross-encoder reranking |
+
+---
+
+## Hardware Notes
+
+- **GPU (RTX 3050 4GB)**: Ollama LLM runs on GPU (~2.4GB VRAM). The embedding model (`bge-m3`) runs on CPU since there is no VRAM budget left.
+- **Async throttling**: The Semantic Enrichment component uses `asyncio.Semaphore(4)` to avoid saturating the local GPU.
+- **Crash safety**: LLM summaries are written to `data/semantic_cache.json` after every successful call. Restarting ingestion on a partially-complete run will skip already-summarized functions.
+
+---
+
+## Supported Languages
+
+Tree-sitter extracts function graphs for: Python, JavaScript, TypeScript, Go, Java, C, C++, Rust, C#, Ruby, Swift, Kotlin, Scala, HTML, CSS.
+
+---
 
 **Made by Anuj Devpura**
-
-*Have questions or feedback? Open an issue or start a discussion!*

@@ -1,0 +1,62 @@
+[
+  {
+    "question": "How does the template engine handle the formatting of the shipping cost and item prices?",
+    "reference_answer": "The template engine uses the format filter to display the cost in the format of units and nanos, where the nanos are divided by 10000000 to get the decimal part of the cost, and then formatted to always display two decimal places using %02d.",
+    "category": "synthetic_generated",
+    "source_node": null
+  },
+  {
+    "question": "What is the relationship between the order object and the items table in the HTML template?",
+    "reference_answer": "The order object is the parent object that contains a list of items, which are then iterated over using a for loop to populate the items table in the HTML template, with each item displaying its product ID, quantity, and cost.",
+    "category": "synthetic_generated",
+    "source_node": null
+  },
+  {
+    "question": "In money.go, how is the Sum function implemented to add two pb.Money objects?",
+    "reference_answer": "The Sum function adds the Units and Nanos of the two Money objects. It then checks if Nanos exceeds 1000000000 (1 billion) or is negative, and adjusts Units and Nanos accordingly to ensure Nanos remains in the valid fractional range (0 to 999999999) before returning the final pb.Money struct.",
+    "category": "synthetic_generated",
+    "source_node": null
+  },
+  {
+    "question": "In the checkoutservice, what gRPC services does the CheckoutService depend on to successfully place an order?",
+    "reference_answer": "The CheckoutService depends on several gRPC services to place an order, specifically the CartService (to get and empty the cart), ProductCatalogService (to get product details), CurrencyService (to convert currencies), ShippingService (to get quotes and ship orders), EmailService (to send order confirmations), and PaymentService (to process credit card charges).",
+    "category": "synthetic_generated",
+    "source_node": null
+  },
+  {
+    "question": "What does the shippingservice_test.go file specifically test in the TestGetQuote function?",
+    "reference_answer": "The TestGetQuote function verifies that the GetQuote RPC returns the expected shipping cost for an address and a set of items. It checks if the returned Quote matches the hardcoded expected value by asserting the amount and currency code.",
+    "category": "synthetic_generated",
+    "source_node": null
+  },
+  {
+    "question": "How does the recommendationservice filter out products that are already in the user's cart?",
+    "reference_answer": "The recommendationservice receives the user's cart product IDs in the request. It retrieves a list of products from the ProductCatalogService, shuffles them, and iterates through the catalog, skipping any product ID that is present in the product_ids array from the request, until it accumulates the desired number of recommendations.",
+    "category": "synthetic_generated",
+    "source_node": null
+  },
+  {
+    "question": "How does the CartServiceClient handle errors when invoking the AddItem method?",
+    "reference_answer": "The CartServiceClient handles errors when invoking the AddItem method by checking the error returned from the cc.Invoke call and returning it to the caller if it is not nil. If an error occurs, the method will return nil for the response and the error.",
+    "category": "synthetic_generated",
+    "source_node": null
+  },
+  {
+    "question": "What is the purpose of the UnimplementedCartServiceServer type and how is it used?",
+    "reference_answer": "The UnimplementedCartServiceServer type is used to provide a default implementation for the CartServiceServer interface. It is intended to be embedded by value in custom implementations of CartServiceServer to ensure forward compatibility. If a method is not implemented, it will return an error with the code Unimplemented.",
+    "category": "synthetic_generated",
+    "source_node": null
+  },
+  {
+    "question": "How does the initContainer 'frontend-check' handle the scenario where the frontend service is not reachable within the specified number of retries?",
+    "reference_answer": "The initContainer 'frontend-check' handles this scenario by exiting with a non-zero status code (1) after the maximum number of retries (12) have been attempted, indicating that the frontend service could not be reached.",
+    "category": "synthetic_generated",
+    "source_node": null
+  },
+  {
+    "question": "What is the relationship between the 'loadgenerator' ServiceAccount and the 'loadgenerator' Deployment?",
+    "reference_answer": "The 'loadgenerator' ServiceAccount is referenced by the 'loadgenerator' Deployment through the 'serviceAccountName' field in the Deployment's spec, indicating that the 'loadgenerator' Deployment uses the 'loadgenerator' ServiceAccount for authentication and authorization purposes.",
+    "category": "synthetic_generated",
+    "source_node": null
+  }
+]

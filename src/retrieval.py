@@ -1,133 +1,114 @@
-import sys
-from llama_index.core import StorageContext, load_index_from_storage, VectorStoreIndex
-from llama_index.core.postprocessor import SentenceTransformerRerank
-from llama_index.core.retrievers import VectorIndexRetriever
-from llama_index.core.vector_stores import ExactMatchFilter, MetadataFilters
-from src.config import CHROMA_PATH, TOP_K, RERANK_TOP_K, RERANK_MODEL
-from src.database import get_vector_store
+import os
+import argparse
+from typing import List, Optional
+
+from llama_index.core.indices.property_graph import PropertyGraphIndex
+from llama_index.core.retrievers import VectorContextRetriever
+from llama_index.core.schema import NodeWithScore
+from llama_index.embeddings.huggingface import HuggingFaceEmbedding
+from llama_index.core import Settings
+from dotenv import load_dotenv
+
+load_dotenv()
+
+from src.config import EMBEDDING_MODEL_NAME, TOP_K, RETRIEVE_LLM_PROVIDER, RETRIEVE_LLM_MODEL
+from src.database import get_vector_store, get_graph_store
+from src.llm import LLMEngine
+
 
 class Retriever:
-    def __init__(self, use_reranker: bool = True):
-        self.use_reranker = use_reranker
-        self._index = self._load_index()
-        
-        # 1. Initialize Reranker
-        if self.use_reranker:
-            print(f"🚀 Initializing Reranker: {RERANK_MODEL}...")
-            self.reranker = SentenceTransformerRerank(
-                model=RERANK_MODEL,
-                top_n=RERANK_TOP_K
-            )
+    """
+    Manages the hybrid GraphRAG retrieval pipeline.
 
-    def _load_index(self):
-        """
-        Loads the existing ChromaDB index from disk.
-        If no index metadata exists, creates a new index from the existing vector store.
-        """
-        print(f"📂 Loading Index from {CHROMA_PATH}...")
+    Semantic Jump: locate EntityNodes via vector similarity search.
+    Structural Blast Radius: traverse graph edges (path_depth=1) outward from those nodes
+    to pull in their callers and callees, providing rich structural context.
+    """
+
+    def __init__(self, use_reranker: bool = False):
         vector_store = get_vector_store()
-        storage_context = StorageContext.from_defaults(vector_store=vector_store)
-        
-        try:
-            index = load_index_from_storage(
-                storage_context=storage_context,
-                store_nodes_override=True 
-            )
-            print("✅ Index loaded successfully")
-            return index
-        except (ValueError, KeyError):
-            print("⚠️ No index metadata found, creating index from vector store...")
-            try:
-                index = VectorStoreIndex.from_vector_store(
-                    vector_store=vector_store,
-                    storage_context=storage_context
-                )
-                print("✅ Index created from existing vector store")
-                return index
-            except Exception as create_error:
-                raise ValueError(
-                    f"No index found and vector store appears to be empty ({create_error}). "
-                    "Please ingest at least one repository first."
-                ) from create_error
-        except Exception as e:
-            raise ValueError(f"Failed to load index: {e}") from e
+        graph_store = get_graph_store()
 
-    def search(self, query_text: str, repo_name: str = None, top_k: int = None, rerank: bool = None):
-        """
-        Performs retrieval (Vector Search -> Cross-Encoder Reranking)
-        with optional repository filtering.
-        """
-        if not query_text or not query_text.strip():
-            raise ValueError("Query text cannot be empty")
-        
-        target_rerank = rerank if rerank is not None else self.use_reranker
-        k = top_k or (TOP_K * 2 if target_rerank else TOP_K)
-        
-        print(f"🔍 Executing Search for: '{query_text}'" + (f" in '{repo_name}'" if repo_name else ""))
-        
-        # Apply repo filter if provided
-        filters = None
-        if repo_name and repo_name != "All Repositories":
-            filters = MetadataFilters(
-                filters=[ExactMatchFilter(key="repo_name", value=repo_name)]
-            )
-            
-        vector_retriever = VectorIndexRetriever(
-            index=self._index,
-            similarity_top_k=k,
-            filters=filters
+        # During retrieval, generation is handled by Groq (cloud) so VRAM is
+        # completely free for bge-m3. Always use CUDA — never CPU.
+        embed_model = HuggingFaceEmbedding(
+            model_name=EMBEDDING_MODEL_NAME,
+            trust_remote_code=True,
+            device="cuda",
+            embed_batch_size=32,   # GPU is fast, higher batch is fine
         )
-        
-        # 1. Retrieval Stage (Vector Search)
-        nodes = vector_retriever.retrieve(query_text)
-        print(f"   📊 Found {len(nodes)} candidates...")
-        
-        # 2. Reranking Stage
-        if target_rerank and len(nodes) > 0:
-            print(f"   ✨ Reranking to top {RERANK_TOP_K} results...")
-            nodes = self.reranker.postprocess_nodes(nodes, query_str=query_text)
-            print(f"   ✅ Reranked to {len(nodes)} results")
-            
+        Settings.embed_model = embed_model
+        Settings.llm = None  # prevent accidental OpenAI fallback
+
+        self._graph_store = graph_store
+        self._vector_store = vector_store
+        self._embed_model = embed_model
+
+        self._index = PropertyGraphIndex.from_existing(
+            property_graph_store=graph_store,
+            vector_store=vector_store,
+            embed_model=embed_model,
+        )
+
+        self._retriever = VectorContextRetriever(
+            graph_store=graph_store,
+            vector_store=vector_store,
+            embed_model=embed_model,
+            similarity_top_k=TOP_K,
+            path_depth=1,      # traverse 1 edge out for blast radius
+            include_text=True, # fetch original source chunks
+        )
+
+    def search(self, query: str, repo_name: Optional[str] = None) -> List[NodeWithScore]:
+        """
+        Run hybrid retrieval and optionally filter results by repository name.
+        Returns an empty list if query is blank.
+        """
+        if not query or not query.strip():
+            return []
+        nodes = self._retriever.retrieve(query)
+        if repo_name and repo_name != "All Repositories":
+            nodes = [n for n in nodes if n.node.metadata.get("repo_name") == repo_name]
         return nodes
 
+
+def main():
+    parser = argparse.ArgumentParser(description="Query RepoMind GraphRAG (CLI)")
+    parser.add_argument("query", type=str, help="The question to ask the codebase")
+    args = parser.parse_args()
+
+    print("🔧 Initializing retrieval pipeline...")
+    retriever = Retriever()
+
+    llm_engine = LLMEngine(provider=RETRIEVE_LLM_PROVIDER, model_name=RETRIEVE_LLM_MODEL)
+    Settings.llm = llm_engine.llm
+
+    print(f"\n{'='*60}")
+    print("🚀 Running Hybrid Retrieval: Semantic Jump + Structural Blast Radius")
+    print(f"{'='*60}\n")
+    print(f"🗣️  Query: {args.query}\n")
+    print("🤖 Thinking...")
+
+    query_engine = retriever._index.as_query_engine(
+        sub_retrievers=[retriever._retriever],
+        llm=llm_engine.llm,
+        similarity_top_k=TOP_K,
+    )
+    response = query_engine.query(args.query)
+
+    print("\n🎯 Response:")
+    print("-" * 60)
+    print(response.response)
+    print("-" * 60)
+
+    print("\n🔍 Context Retrieved (The Blast Radius):")
+    for i, node in enumerate(response.source_nodes):
+        print(f"\n[Node {i+1}]")
+        content = node.node.get_content()
+        if len(content) > 400:
+            content = content[:400] + "... [TRUNCATED]"
+        print(f"Content:\n{content}")
+
+
 if __name__ == "__main__":
-    # Test the Retrieval Engine
-    from src.database import initialize_database
-    
-    print("🔧 Initializing database...")
-    initialize_database()
-    
-    try:
-        engine = Retriever(use_reranker=True)
-        
-        if len(sys.argv) > 1:
-            test_query = " ".join(sys.argv[1:])
-        else:
-            test_query = "Where is the main training loop defined?"
-        
-        print(f"\n{'='*60}")
-        results = engine.search(test_query)
-        print(f"{'='*60}\n")
-        
-        if not results:
-            print("❌ No results found. Make sure you've ingested at least one repository.")
-        else:
-            print(f"🏆 Top {len(results)} Results:\n")
-            for i, node in enumerate(results, 1):
-                score = getattr(node, 'score', None)
-                score_str = f"{score:.4f}" if score is not None else "N/A"
-                
-                metadata = getattr(node, 'metadata', {})
-                file_path = metadata.get('file_path', 'Unknown')
-                content = node.get_content()[:300] if hasattr(node, 'get_content') else str(node)[:300]
-                
-                print(f"{'─'*60}")
-                print(f"Result {i} (Relevance Score: {score_str})")
-                print(f"File: {file_path}")
-                print(f"Content:\n{content}...\n")
-                
-    except Exception as e:
-        print(f"\n❌ Error: {e}")
-        import traceback
-        traceback.print_exc()
-        sys.exit(1)
+    main()

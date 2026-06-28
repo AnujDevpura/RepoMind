@@ -5,7 +5,8 @@ from llama_index.vector_stores.chroma import ChromaVectorStore
 from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 from llama_index.core import Settings
 from dotenv import load_dotenv
-from src.config import CHROMA_PATH, EMBEDDING_MODEL_NAME, LLM_MODEL_NAME
+from llama_index.core.graph_stores import SimplePropertyGraphStore
+from src.config import CHROMA_PATH, GRAPH_PATH, EMBEDDING_MODEL_NAME
 
 load_dotenv()
 
@@ -18,44 +19,63 @@ def get_vector_store():
     vector_store = ChromaVectorStore(chroma_collection=chroma_collection)
     return vector_store
 
-def initialize_database():
+def get_graph_store():
+    """
+    Initializes the SimplePropertyGraphStore.
+    """
+    # LlamaIndex SimplePropertyGraphStore persists to JSON
+    graph_path = os.path.join(GRAPH_PATH, "graph_store.json")
+    if os.path.exists(graph_path):
+        try:
+            return SimplePropertyGraphStore.from_persist_path(graph_path)
+        except Exception as e:
+            print(f"⚠️ Failed to load graph store: {e}, creating a new one.")
+    return SimplePropertyGraphStore()
+
+def initialize_database(load_embed_model: bool = True):
     """
     Sets up the global LlamaIndex settings.
     This must be called at the start of the application.
-    """
-    print(f"🔄 Loading Embedding Model: {EMBEDDING_MODEL_NAME}...")
-    
-    embed_model = HuggingFaceEmbedding(
-        model_name=EMBEDDING_MODEL_NAME,
-        trust_remote_code=True
-    )
-    
-    # 1. Apply Global Embedding Model
-    Settings.embed_model = embed_model
-    print("✅ Embedding Model Loaded.")
 
-    # 2. Prevent LlamaIndex from automatically using OpenAI if we don't want it to
-    Settings.llm = None 
-        
+    Args:
+        load_embed_model: If True (default, retrieval/app), load bge-m3 on CUDA.
+            If False (ingestion path), defer — SemanticEnrichmentComponent will
+            load bge-m3 on CUDA after evicting the Ollama LLM.
+    """
+    if load_embed_model:
+        print(f"🔄 Loading Embedding Model: {EMBEDDING_MODEL_NAME} on CUDA...")
+        embed_model = HuggingFaceEmbedding(
+            model_name=EMBEDDING_MODEL_NAME,
+            trust_remote_code=True,
+            device="cuda",        # Always GPU — no CPU embedding ever
+            embed_batch_size=16,
+        )
+        Settings.embed_model = embed_model
+        print("✅ Embedding Model Loaded on CUDA.")
+    else:
+        # Ingestion path: bge-m3 will be loaded on CUDA by SemanticEnrichmentComponent
+        # after Ollama is evicted, so we don't compete for VRAM here.
+        Settings.embed_model = None
+        print("ℹ️  Embedding model deferred — will load on CUDA during ingestion.")
+
+    # Prevent LlamaIndex from automatically using OpenAI
+    Settings.llm = None
+
     return get_vector_store()
 
 def get_all_repositories():
     """
-    Returns a list of unique repository names currently ingested.
+    Returns a list of unique repository names currently ingested by looking at the clone directory.
     """
-    db = chromadb.PersistentClient(path=CHROMA_PATH)
-    try:
-        collection = db.get_collection("repomind_codebase")
-    except ValueError:
-        return [] # Collection doesn't exist yet
+    from src.config import CLONE_DIR
+    if not os.path.exists(CLONE_DIR):
+        return []
     
-    data = collection.get(include=["metadatas"])
-    repos = set()
-    if data and data.get("metadatas"):
-        for meta in data["metadatas"]:
-            if meta and "repo_name" in meta:
-                repos.add(meta["repo_name"])
-    return sorted(list(repos))
+    repos = []
+    for item in os.listdir(CLONE_DIR):
+        if os.path.isdir(os.path.join(CLONE_DIR, item)):
+            repos.append(item)
+    return sorted(repos)
 
 def delete_repository(repo_name: str):
     """
