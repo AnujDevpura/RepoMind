@@ -5,63 +5,30 @@ from llama_index.core.llms import LLM
 from src.evaluation.groq_client import RobustGroqClient
 
 COMPREHENSIVE_EVALUATION_PROMPT = """
-You are an elite Principal Software Engineer evaluating the performance of a Code-Aware RAG system.
-Your task is to evaluate a generated answer based on the user's query and the retrieved source code context.
+Evaluate the Generated Answer based on the User Query and Context.
 
-You must evaluate the response across 4 distinct pillars using a strict 0-5 scale.
-
-### PILLAR 1: Code Faithfulness (0-5)
-Does the generated answer hallucinate code, logic, or dependencies not present in the context?
-- 5: Perfectly faithful. Every class, function, or variable mentioned exists in the context.
-- 4: Mostly faithful. Minor conceptual generalizations, but no hallucinated code structures.
-- 3: Partially faithful. Accurately references some context but hallucinates a minor function or file.
-- 2: Mostly hallucinated. Invents major dependencies or files not provided in the context.
-- 1: Barely faithful. References context but is overwhelmed by hallucinations.
-- 0: Completely unfaithful or explicitly admits it cannot answer due to lack of context.
-
-### PILLAR 2: Structural Relevance (0-5)
-Did the retrieved context provide the necessary code to answer the query?
-- 5: Perfect context. Includes exact files, caller/callee graphs, and necessary imports.
-- 4: Highly relevant. Contains the core logic needed, but might be missing a minor dependency.
-- 3: Partially relevant. Contains related code but misses the specific logic asked for.
-- 2: Barely relevant. Pulls from the right repository/module but completely misses the target logic.
-- 1: Extremely irrelevant context, missing almost all relevant modules.
-- 0: Completely irrelevant context.
-
-### PILLAR 3: Answer Completeness (0-5)
-How completely did the generated answer address the user's prompt?
-- 5: Extremely comprehensive. Answers every part of the prompt accurately.
-- 4: Strong answer, but lacks a tiny bit of depth or omits a secondary aspect of the prompt.
-- 3: Moderate. Answers the primary question but ignores significant architectural nuances.
-- 2: Poor. Barely addresses the core prompt or gives a superficial summary.
-- 1: Extremely poor. Fails to address the core prompt entirely.
-- 0: Completely fails to answer the prompt or gives an empty/irrelevant response.
-
-### PILLAR 4: Code Synthesization & Readability (0-5)
-How well is the technical explanation formatted and synthesized?
-- 5: Excellent formatting. Uses Markdown cleanly, cites file paths, and breaks down complex logic.
-- 4: Good formatting. Readable, but could use better structural grouping or clearer file citations.
-- 3: Average. A bit of a wall of text, or fails to properly format code blocks.
-- 2: Poor. Difficult to read, messy formatting, confusing transitions.
-- 1: Extremely poor. Hard to parse visually.
-- 0: Unreadable or incoherent structure.
+Score these 4 metrics on a 0-5 scale (0=Fail, 5=Perfect).
+1. Faithfulness: Does it hallucinate code/logic? (5=Perfectly faithful)
+2. Relevance: Did the context provide the necessary code? (5=Perfect context)
+3. Completeness: Did the answer address the prompt? (5=Very comprehensive)
+4. Synthesization: How well is it formatted? (5=Excellent formatting)
 
 ---
-User Query: {query}
+Query: {query}
 ---
-Retrieved Context:
+Context:
 {context}
 ---
-Generated Answer:
+Answer:
 {answer}
 ---
 
-Output your evaluation as a JSON object with the exact following structure. Output ONLY valid JSON:
+Output valid JSON exactly like this:
 {{
-  "faithfulness": {{"score": <0-5>, "reasoning": "<explanation>"}},
-  "relevance": {{"score": <0-5>, "reasoning": "<explanation>"}},
-  "completeness": {{"score": <0-5>, "reasoning": "<explanation>"}},
-  "synthesization": {{"score": <0-5>, "reasoning": "<explanation>"}}
+  "faithfulness": {{"score": <0-5>, "reasoning": "<1 sentence>"}},
+  "relevance": {{"score": <0-5>, "reasoning": "<1 sentence>"}},
+  "completeness": {{"score": <0-5>, "reasoning": "<1 sentence>"}},
+  "synthesization": {{"score": <0-5>, "reasoning": "<1 sentence>"}}
 }}
 """
 
@@ -93,6 +60,12 @@ class ComprehensiveCodeRAGEvaluator(BaseEvaluator):
             return EvaluationResult(score=0.0, feedback="Missing query, response, or context.")
             
         context_str = "\n\n".join(contexts)
+        
+        # Hard-cap context length to prevent blowing past Groq 12k TPM limits
+        max_chars = 30000
+        if len(context_str) > max_chars:
+            context_str = context_str[:max_chars] + "\n\n...[CONTEXT TRUNCATED DUE TO TOKEN LIMITS]..."
+            
         prompt = COMPREHENSIVE_EVALUATION_PROMPT.format(
             query=query, context=context_str, answer=response
         )

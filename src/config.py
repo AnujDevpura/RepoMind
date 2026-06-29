@@ -34,7 +34,7 @@ os.makedirs(GRAPH_PATH, exist_ok=True)
 EMBEDDING_MODEL_NAME = os.getenv("EMBEDDING_MODEL_NAME", "BAAI/bge-m3")
 
 # --- Retrieval / RAG Config ---
-TOP_K = get_int_env("TOP_K", 3) # Restored to 5 since we are moving to local Ollama
+TOP_K = int(os.getenv("TOP_K", 3))
 
 # --- Feature Flags ---
 USE_RERANKER = os.getenv("USE_RERANKER", "false").lower() == "true"

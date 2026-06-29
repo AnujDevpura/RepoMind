@@ -186,7 +186,7 @@ All settings live in `src/config.py` and can be overridden via `.env`:
 
 ## Hardware Notes
 
-- **GPU (RTX 3050 4GB)**: Ollama LLM runs on GPU (~2.4GB VRAM). The embedding model (`bge-m3`) runs on CPU since there is no VRAM budget left.
+- **GPU (RTX 3050 4GB)**: Ollama LLM runs on GPU (~2.4GB VRAM) and the embedding model (`bge-m3`) as well.
 - **Async throttling**: The Semantic Enrichment component uses `asyncio.Semaphore(4)` to avoid saturating the local GPU.
 - **Crash safety**: LLM summaries are written to `data/semantic_cache.json` after every successful call. Restarting ingestion on a partially-complete run will skip already-summarized functions.
 

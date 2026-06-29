@@ -30,16 +30,30 @@ class RobustGroqClient:
     """
     A specialized Groq client that dynamically intercepts rate limits, 
     calculates the EXACT requested wait time, waits, and automatically resumes.
+    It supports multiple API keys and will round-robin if one hits a hard limit.
     """
     def __init__(self, model_name: str, max_retries: int = 5, base_delay: float = 2.0):
-        api_key = os.getenv("GROQ_API_KEY")
-        if not api_key:
+        api_keys_env = os.getenv("GROQ_API_KEY")
+        if not api_keys_env:
             raise ValueError("❌ GROQ_API_KEY not found in environment variables.")
             
-        self.client = AsyncGroq(api_key=api_key)
+        # Support comma-separated keys
+        self.api_keys = [k.strip() for k in api_keys_env.split(",") if k.strip()]
+        if not self.api_keys:
+            raise ValueError("❌ GROQ_API_KEY is empty.")
+            
+        self.current_key_idx = 0
+        self.client = AsyncGroq(api_key=self.api_keys[self.current_key_idx])
         self.model_name = model_name
         self.max_retries = max_retries
         self.base_delay = base_delay
+
+    def _rotate_key(self):
+        """Switches to the next API key in the list."""
+        self.current_key_idx = (self.current_key_idx + 1) % len(self.api_keys)
+        new_key = self.api_keys[self.current_key_idx]
+        self.client = AsyncGroq(api_key=new_key)
+        logger.info(f"🔄 Switched to Groq API Key {self.current_key_idx + 1}/{len(self.api_keys)}")
 
     async def acomplete(self, prompt: str):
         """
@@ -47,6 +61,8 @@ class RobustGroqClient:
         and guaranteeing a response even if it takes hours.
         """
         attempt = 0
+        keys_tried = 0
+        
         while True:
             try:
                 # 1. Execute the actual completion request
@@ -69,9 +85,16 @@ class RobustGroqClient:
                 return MockResponse(content)
 
             except RateLimitError as e:
-                # 2. Dynamic Rate Limit Parsing
                 error_message = str(e)
                 
+                # If we have multiple keys, try to rotate first before sleeping
+                if len(self.api_keys) > 1 and keys_tried < len(self.api_keys) - 1:
+                    logger.warning(f"⚠️ GROQ RATE LIMIT HIT! Rotating to next API key...")
+                    self._rotate_key()
+                    keys_tried += 1
+                    continue
+
+                # 2. Dynamic Rate Limit Parsing (fallback if all keys exhausted or only 1 key)
                 # Groq exact format: "Please try again in 14h23m12.5s." or "Please try again in 8.5s."
                 wait_match = re.search(r'Please try again in ((?:[0-9]+h)?(?:[0-9]+m)?(?:[0-9]+(?:\.[0-9]+)?s))', error_message)
                 
@@ -80,11 +103,11 @@ class RobustGroqClient:
                     wait_time = parse_groq_time(raw_time_str)
                     
                     logger.warning(
-                        f"⚠️ GROQ RATE LIMIT HIT! Exact wait time requested by API: {raw_time_str}. "
+                        f"⚠️ ALL KEYS RATE LIMITED. Exact wait time requested by API: {raw_time_str}. "
                         f"Sleeping for exactly {wait_time:.3f} seconds..."
                     )
                     await asyncio.sleep(wait_time)
-                    # We do NOT increment `attempt` here because rate limits are intentional and we want to retry indefinitely after waiting.
+                    keys_tried = 0 # Reset rotation counter after a full sleep
                     continue
                 else:
                     # Fallback if Groq changes their error format

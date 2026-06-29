@@ -16,10 +16,13 @@ class LLMEngine:
         print(f"🧠 Initializing LLM Engine with provider: '{self.provider}', model: '{self.model_name}'...")
         
         if self.provider == "groq":
-            api_key = os.getenv("GROQ_API_KEY")
-            if not api_key:
+            api_keys_env = os.getenv("GROQ_API_KEY")
+            if not api_keys_env:
                 raise ValueError("❌ GROQ_API_KEY not found in .env file. Please add it!")
-            self.llm = Groq(model=self.model_name, api_key=api_key)
+            
+            self.api_keys = [k.strip() for k in api_keys_env.split(",") if k.strip()]
+            self.current_key_idx = 0
+            self.llm = Groq(model=self.model_name, api_key=self.api_keys[self.current_key_idx])
             
         elif self.provider == "openai":
             api_key = os.getenv("OPENAI_API_KEY")
@@ -71,6 +74,11 @@ class LLMEngine:
                 
                 context_str += f"\n=== Source {i}: {file_path} ===\n{content}\n"
 
+        # Hard-cap context length to prevent blowing past Groq 12k TPM limits
+        max_chars = 30000
+        if len(context_str) > max_chars:
+            context_str = context_str[:max_chars] + "\n\n...[CONTEXT TRUNCATED DUE TO TOKEN LIMITS]..."
+
         # 2. Construct the Upgraded System Prompt
         system_prompt = (
             "You are RepoMind, an elite AI Architect and Senior Software Engineer. You excel at explaining complex codebases.\n\n"
@@ -96,13 +104,27 @@ class LLMEngine:
         messages.append(ChatMessage(role="user", content=user_prompt))
 
         # 5. Generate Streamed Response
-        try:
-            response_stream = self.llm.stream_chat(messages)
-            for chunk in response_stream:
-                if chunk.delta:
-                    yield chunk.delta
-        except Exception as e:
-            yield f"\n❌ Error generating response: {e}"
+        keys_tried = 0
+        while True:
+            try:
+                response_stream = self.llm.stream_chat(messages)
+                for chunk in response_stream:
+                    if chunk.delta:
+                        yield chunk.delta
+                break
+            except Exception as e:
+                error_str = str(e)
+                is_rate_limit = any(term in error_str for term in ["RateLimitError", "rate_limit_exceeded", "413", "429"])
+                
+                if is_rate_limit and hasattr(self, "api_keys") and len(self.api_keys) > 1 and keys_tried < len(self.api_keys) - 1:
+                    self.current_key_idx = (self.current_key_idx + 1) % len(self.api_keys)
+                    self.llm = Groq(model=self.model_name, api_key=self.api_keys[self.current_key_idx])
+                    keys_tried += 1
+                    yield f"\n[🔄 Groq Limit Hit: Rotating to Key {self.current_key_idx + 1}/{len(self.api_keys)}...]\n"
+                    continue
+                    
+                yield f"\n❌ Error generating response: {e}"
+                break
 
 if __name__ == "__main__":
     # Sanity Check
